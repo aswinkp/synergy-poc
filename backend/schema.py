@@ -37,3 +37,51 @@ COLUMNS: list[tuple[str, str, str]] = [
 COLUMN_LABELS = {name: label for name, label, _ in COLUMNS}
 
 SCHEMA_PROMPT = "\n".join(f"- {name}: {label}" for name, label, _ in COLUMNS)
+
+
+HEADCOUNT_COLUMNS: list[tuple[str, str, str]] = [
+    ("employee_id", "Employee ID", "TEXT"),
+    ("employee_name", "Employee Name", "TEXT"),
+    ("company", "Company", "TEXT"),
+    ("business_unit", "Business Unit", "TEXT"),
+    ("synergy_division", "Synergy Division", "TEXT"),
+    ("functional_area", "Functional Area", "TEXT"),
+    ("current_department", "Current Department", "TEXT"),
+    ("employee_category", "Category", "TEXT"),
+    ("contribution_level", "Contribution Level", "TEXT"),
+    ("job_level", "Job Level", "TEXT"),
+    ("designation", "Designation", "TEXT"),
+    ("current_office_area", "Current Office Area", "TEXT"),
+    ("tmsa_type", "TMSA Type", "TEXT"),
+    ("tmsa_guidelines", "TMSA Guidelines", "TEXT"),
+    ("manager_id", "Manager ID", "TEXT"),
+    ("manager_name", "Manager Name", "TEXT"),
+    ("employment_status", "Employment Status", "TEXT"),
+    ("confirmation_date", "Confirmation Date", "TEXT"),
+    ("effective_from", "Effective From", "TEXT"),
+    ("email_id", "Email ID", "TEXT"),
+    ("gender", "Gender", "TEXT"),
+    ("date_of_joining", "Date Of Joining", "TEXT"),
+    ("date_of_birth", "Date Of Birth", "TEXT"),
+    ("date_of_joining_group", "Date Of Joining Group", "TEXT"),
+    ("personal_email_id", "Personal Email ID", "TEXT"),
+    ("mobile_no", "Mobile No", "TEXT"),
+    ("generation", "Generation", "TEXT"),
+    ("age", "Age", "INTEGER"),
+    ("exit_type", "Exit Type", "TEXT"),
+    ("exit_reason", "Exit Reason - 1", "TEXT"),
+    ("date_of_resignation", "Date of Resignation", "TEXT"),
+    ("role_type", "Role Type", "TEXT"),
+    ("active_status", "Active Status", "TEXT"),
+    ("hrbp_name", "HRBP Name", "TEXT"),
+    ("hrbp_id", "HRBP ID", "TEXT"),
+    ("qhse_name", "QHSE Name", "TEXT"),
+    ("qhse_id", "QHSE ID", "TEXT"),
+    ("doc_head_name", "DOC Head Name", "TEXT"),
+    ("doc_head_id", "DOC Head ID", "TEXT"),
+    ("hr_input_name", "HR Input Name", "TEXT"),
+    ("hr_input_id", "HR Input ID", "TEXT"),
+]
+
+HEADCOUNT_SCHEMA_PROMPT = "\n".join(f"- {name}: {label}" for name, label, _ in HEADCOUNT_COLUMNS)
+COLUMN_LABELS.update({name: label for name, label, _ in HEADCOUNT_COLUMNS})

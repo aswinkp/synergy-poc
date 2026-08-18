@@ -20,11 +20,23 @@ def find_workbook() -> Path:
     configured = os.getenv("EXCEL_PATH")
     if configured:
         return _resolve_path(configured, ROOT)
-    workbooks = sorted(ROOT.glob("*.xlsx"))
+    workbooks = [path for path in sorted(ROOT.glob("*.xlsx")) if "headcount" not in path.name.casefold()]
     if not workbooks:
-        raise FileNotFoundError("Place an .xlsx workbook in the project folder or set EXCEL_PATH.")
+        raise FileNotFoundError("Set EXCEL_PATH or place the learning-report .xlsx workbook in the project folder.")
     return workbooks[0]
 
 
+def find_headcount_workbook() -> Path | None:
+    configured = os.getenv("HEADCOUNT_EXCEL_PATH")
+    if configured:
+        return _resolve_path(configured, ROOT)
+    workbooks = [path for path in sorted(ROOT.glob("*.xlsx")) if "headcount" in path.name.casefold()]
+    return workbooks[0] if workbooks else None
+
+
 DATABASE_PATH = _resolve_path(os.getenv("DATABASE_PATH"), ROOT / "data" / "learning_chat.db")
+EXPORTS_PATH = _resolve_path(os.getenv("EXPORTS_PATH"), ROOT / "data" / "exports")
 OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "openai/gpt-5.6-luna")
+AUTH_SECRET = os.getenv("AUTH_SECRET", "")
+AUTH_TOKEN_TTL_HOURS = int(os.getenv("AUTH_TOKEN_TTL_HOURS", "12"))
+AUTH_COOKIE_SECURE = os.getenv("AUTH_COOKIE_SECURE", "false").casefold() in {"1", "true", "yes", "on"}

@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { ArrowUp, BarChart3, Menu, MessageSquareText, MoreHorizontal, PanelLeftClose, Plus, Sparkles, Trash2, X } from 'lucide-react'
-import { api } from './api'
+import { ArrowUp, BarChart3, Download, FileSpreadsheet, LogOut, Menu, MessageSquareText, PanelLeftClose, Plus, Sparkles, Trash2, X } from 'lucide-react'
+import { api, ApiError } from './api'
 import ChartView from './ChartView'
-import type { Chat, Message } from './types'
+import LoginScreen from './LoginScreen'
+import type { AuthUser, Chat, ExportAttachment, Message } from './types'
 
 const prompts = [
   'Show completion status as a donut chart',
@@ -17,7 +18,30 @@ function formatRelative(value: string) {
   return date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
 }
 
+function formatBytes(bytes: number) {
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+}
+
+function ExportCard({ attachment }: { attachment: ExportAttachment }) {
+  return (
+    <div className="export-card">
+      <div className="export-icon"><FileSpreadsheet size={20} /></div>
+      <div className="export-details">
+        <strong>{attachment.filename}</strong>
+        <span>{attachment.format.toUpperCase()} · {attachment.row_count.toLocaleString()} rows · {formatBytes(attachment.size_bytes)}</span>
+      </div>
+      <a className="download-export" href={attachment.url} download={attachment.filename}>
+        <span>Download</span><Download size={16} />
+      </a>
+    </div>
+  )
+}
+
 export default function App() {
+  const [user, setUser] = useState<AuthUser | null>(null)
+  const [authReady, setAuthReady] = useState(false)
   const [chats, setChats] = useState<Chat[]>([])
   const [activeId, setActiveId] = useState<string | null>(null)
   const [messages, setMessages] = useState<Message[]>([])
@@ -25,11 +49,30 @@ export default function App() {
   const [loading, setLoading] = useState(false)
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [records, setRecords] = useState<number | null>(null)
+  const [headcountEmployees, setHeadcountEmployees] = useState<number | null>(null)
   const [error, setError] = useState('')
   const endRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
 
   const activeChat = useMemo(() => chats.find((chat) => chat.id === activeId), [chats, activeId])
+
+  const resetWorkspace = () => {
+    setChats([])
+    setActiveId(null)
+    setMessages([])
+    setRecords(null)
+    setHeadcountEmployees(null)
+    setInput('')
+  }
+
+  const handleRequestError = (reason: unknown, fallback: string) => {
+    if (reason instanceof ApiError && reason.status === 401) {
+      resetWorkspace()
+      setUser(null)
+      return
+    }
+    setError(reason instanceof Error ? reason.message : fallback)
+  }
 
   const refreshChats = async () => {
     const next = await api.chats()
@@ -37,13 +80,26 @@ export default function App() {
   }
 
   useEffect(() => {
+    api.me()
+      .then(setUser)
+      .catch((reason) => {
+        if (!(reason instanceof ApiError && reason.status === 401)) {
+          setError(reason instanceof Error ? reason.message : 'Could not check your session')
+        }
+      })
+      .finally(() => setAuthReady(true))
+  }, [])
+
+  useEffect(() => {
+    if (!user) return
     Promise.all([api.chats(), api.health()])
       .then(([chatList, health]) => {
         setChats(chatList)
         setRecords(health.records)
+        setHeadcountEmployees(health.headcount_employees)
       })
-      .catch((reason) => setError(reason.message))
-  }, [])
+      .catch((reason) => handleRequestError(reason, 'Could not load the workspace'))
+  }, [user])
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -65,16 +121,20 @@ export default function App() {
       setMessages(chat.messages || [])
       setSidebarOpen(false)
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : 'Could not open that chat')
+      handleRequestError(reason, 'Could not open that chat')
     }
   }
 
   const removeChat = async (event: React.MouseEvent, id: string) => {
     event.stopPropagation()
     if (!window.confirm('Delete this analysis and its messages?')) return
-    await api.removeChat(id)
-    setChats((current) => current.filter((chat) => chat.id !== id))
-    if (activeId === id) newChat()
+    try {
+      await api.removeChat(id)
+      setChats((current) => current.filter((chat) => chat.id !== id))
+      if (activeId === id) newChat()
+    } catch (reason) {
+      handleRequestError(reason, 'Could not delete that chat')
+    }
   }
 
   const submit = async (value = input) => {
@@ -96,11 +156,29 @@ export default function App() {
       setMessages((current) => [...current, result.message])
       await refreshChats()
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : 'The question could not be answered')
+      handleRequestError(reason, 'The question could not be answered')
     } finally {
       setLoading(false)
       inputRef.current?.focus()
     }
+  }
+
+  const logout = async () => {
+    try {
+      await api.logout()
+    } finally {
+      resetWorkspace()
+      setUser(null)
+      document.body.classList.remove('sidebar-collapsed')
+    }
+  }
+
+  if (!authReady) {
+    return <div className="auth-loading"><div className="brand-mark"><BarChart3 size={19} /></div><span>Loading Synergy…</span></div>
+  }
+
+  if (!user) {
+    return <LoginScreen onAuthenticated={(authenticatedUser) => { setError(''); setUser(authenticatedUser) }} />
   }
 
   return (
@@ -125,10 +203,14 @@ export default function App() {
           {!chats.length && <p className="empty-history">Your analyses will appear here.</p>}
         </nav>
         <div className="data-status">
-          <span className="status-dot" />
-          <div><strong>Report connected</strong><small>{records?.toLocaleString() ?? '—'} course records</small></div>
-          <MoreHorizontal size={17} />
+          <div className="user-avatar">{user.name.slice(0, 1).toUpperCase()}</div>
+          <div className="signed-in-user">
+            <strong>{user.name}</strong>
+            <small>{user.email}</small>
+          </div>
+          <button className="logout-button" onClick={logout} aria-label="Sign out"><LogOut size={16} /></button>
         </div>
+        <div className="report-status"><span className="status-dot" /><span>{records?.toLocaleString() ?? '—'} learning · {headcountEmployees?.toLocaleString() ?? '—'} employees</span></div>
       </aside>
 
       <main className="main-panel">
@@ -157,6 +239,7 @@ export default function App() {
                   <div className="message-body">
                     <p>{message.content}</p>
                     {message.visualization && <ChartView visualization={message.visualization} />}
+                    {message.attachment && <ExportCard attachment={message.attachment} />}
                   </div>
                 </article>
               ))}

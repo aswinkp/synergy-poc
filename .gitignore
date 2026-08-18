@@ -2,6 +2,7 @@
 .env
 .env.*
 !.env.example
+!.env.production.example
 .venv/
 __pycache__/
 *.py[cod]
@@ -17,6 +18,8 @@ frontend/.vite/
 *.tsbuildinfo
 frontend/vite.config.js
 frontend/vite.config.d.ts
+data/exports/
+data/backups/
 
 *.db
 *.db-*
@@ -28,3 +31,4 @@ frontend/vite.config.d.ts
 
 .idea/
 .vscode/
+.gstack/

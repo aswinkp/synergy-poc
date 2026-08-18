@@ -1,0 +1,70 @@
+name: synergy-poc
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        APP_VERSION: ${APP_VERSION:-local}
+    image: synergy-poc:production
+    restart: unless-stopped
+    init: true
+    env_file:
+      - ${APP_ENV_FILE:-.env.production}
+    environment:
+      DATABASE_PATH: /app/data/learning_chat.db
+      EXPORTS_PATH: /app/data/exports
+      EXCEL_PATH: /app/input/learning.xlsx
+      HEADCOUNT_EXCEL_PATH: /app/input/headcount.xlsx
+      AUTH_COOKIE_SECURE: "true"
+    volumes:
+      - ./data:/app/data
+      - ./input:/app/input:ro
+    read_only: true
+    tmpfs:
+      - /tmp:size=256m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=4).read()"]
+      interval: 30s
+      timeout: 5s
+      start_period: 30s
+      retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "5"
+
+  caddy:
+    image: caddy:2.10.2-alpine
+    restart: unless-stopped
+    depends_on:
+      app:
+        condition: service_healthy
+    environment:
+      APP_DOMAIN: ${APP_DOMAIN:?Set APP_DOMAIN in .env.production}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "5"
+
+volumes:
+  caddy_data:
+  caddy_config:

@@ -8,11 +8,22 @@ export interface Visualization {
   valueKeys?: string[]
 }
 
+export interface ExportAttachment {
+  id: string
+  format: 'csv' | 'xlsx'
+  filename: string
+  url: string
+  row_count: number
+  size_bytes: number
+  title: string
+}
+
 export interface Message {
   id: string
   role: 'user' | 'assistant'
   content: string
   visualization?: Visualization | null
+  attachment?: ExportAttachment | null
   created_at: string
 }
 
@@ -22,4 +33,10 @@ export interface Chat {
   created_at: string
   updated_at: string
   messages?: Message[]
+}
+
+export interface AuthUser {
+  id: string
+  email: string
+  name: string
 }
