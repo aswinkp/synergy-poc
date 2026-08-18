@@ -4,6 +4,7 @@ import json
 import os
 import re
 import sqlite3
+from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import Any
 
@@ -169,6 +170,9 @@ def _explicit_text_answer(question: str) -> bool:
 
 def _requested_export_format(question: str) -> str | None:
     lowered = question.lower()
+    powerpoint_requested = bool(
+        re.search(r"(?:\bpowerpoint\b|\bpptx?\b|\.pptx?\b|\bslide deck\b|\bpresentation deck\b)", lowered)
+    )
     csv_requested = bool(
         re.search(r"(?:\bcsv\b|\.csv\b|comma[- ]separated(?: values)?(?: file)?)", lowered)
     )
@@ -178,11 +182,39 @@ def _requested_export_format(question: str) -> str | None:
             lowered,
         )
     )
+    if powerpoint_requested:
+        return "pptx"
     if csv_requested and not excel_requested:
         return "csv"
     if excel_requested:
         return "xlsx"
     return None
+
+
+def _is_email_action(question: str) -> bool:
+    lowered = " ".join(question.casefold().split())
+    patterns = (
+        r"\b(?:send|draft|write|prepare|compose)\b.{0,100}\b(?:email|mail|message)\b",
+        r"\b(?:email|mail|notify)\b.{0,100}\b(?:managers?|employees?|teams?|them|him|her|recipients?|people)\b",
+    )
+    return any(re.search(pattern, lowered) for pattern in patterns)
+
+
+def send_email() -> str:
+    return "email is sent"
+
+
+_SYNTHESIS_SYSTEM_PROMPT = (
+    "Answer only from the supplied report results. Lead with the answer, then interpret the strongest patterns. "
+    "For advisory questions, give specific prioritized actions tied to exact evidence. For charts and tables, "
+    "explain what matters instead of merely describing the visualization. The frontend renders the visualization "
+    "separately, so return plain text only: no Markdown, Mermaid, chart markup, JSON, or text tables. If the user "
+    "requests CSV or Excel, write a normal conversational summary and never reproduce delimited rows, spreadsheet "
+    "content, or a fake download link; the frontend attaches the real file separately. If the user requests a "
+    "PowerPoint, write a concise, slide-ready executive narrative with a clear conclusion, up to five evidence-backed "
+    "points, and up to three prioritized actions. Generate visually pleasing PowerPoints. The frontend attaches the "
+    "real file separately. Never mention SQL."
+)
 
 
 def _conversation_context(history: list[dict[str, str]] | None) -> str:
@@ -235,7 +267,6 @@ Rules:
 - Use learning_category for course/training category and employee_category for workforce category.
 - Use COLLATE NOCASE or LOWER() for case-insensitive text matching.
 - Resolve follow-up references from the recent conversation.
-- If a manager asks for organizational actions without identifying themselves, analyze the full organization and state that scope.
 - Put interpretation and decision context in explanation, not just a description of the columns.
 - Do not invent a column or value.
 
@@ -321,14 +352,7 @@ def _summarize_with_openrouter(
             messages=[
                 {
                     "role": "system",
-                    "content": (
-                        "Answer only from the supplied report results. Lead with the answer, then interpret the strongest patterns. "
-                        "For advisory questions, give specific prioritized actions tied to exact evidence. For charts and tables, "
-                        "explain what matters instead of merely describing the visualization. The frontend renders the visualization "
-                        "separately, so return plain text only: no Markdown, Mermaid, chart markup, JSON, or text tables. If the user "
-                        "requests CSV or Excel, write a normal conversational summary and never reproduce delimited rows, spreadsheet "
-                        "content, or a fake download link; the frontend attaches the real file separately. Never mention SQL."
-                    ),
+                    "content": _SYNTHESIS_SYSTEM_PROMPT,
                 },
                 {
                     "role": "user",
@@ -355,6 +379,61 @@ def _summarize_with_openrouter(
         raise
     except Exception as exc:
         raise PlannerError(f"OpenRouter answer generation failed: {type(exc).__name__}: {exc}") from exc
+
+
+def _summarize_with_openrouter_chunks(
+    question: str,
+    plan: QueryPlan,
+    rows: list[dict[str, Any]],
+    history: list[dict[str, str]] | None = None,
+) -> Iterator[str]:
+    stream = None
+    try:
+        stream = _openrouter_client().chat.completions.create(
+            model=OPENROUTER_MODEL,
+            temperature=0,
+            extra_body={"reasoning": {"effort": "high"}},
+            stream=True,
+            messages=[
+                {
+                    "role": "system",
+                    "content": _SYNTHESIS_SYSTEM_PROMPT,
+                },
+                {
+                    "role": "user",
+                    "content": json.dumps(
+                        {
+                            "question": question,
+                            "recent_conversation": history or [],
+                            "result_title": plan.title,
+                            "visualization_type": plan.chart_type if plan.mode == "chart" else plan.mode,
+                            "planner_context": plan.explanation,
+                            "rows": rows,
+                        },
+                        ensure_ascii=False,
+                        default=str,
+                    ),
+                },
+            ],
+        )
+        received_content = False
+        for chunk in stream:
+            if not chunk.choices:
+                continue
+            content = chunk.choices[0].delta.content
+            if content:
+                received_content = True
+                yield content
+        if not received_content:
+            raise PlannerError("OpenRouter returned an empty answer.")
+    except QueryError:
+        raise
+    except Exception as exc:
+        raise PlannerError(f"OpenRouter answer generation failed: {type(exc).__name__}: {exc}") from exc
+    finally:
+        close = getattr(stream, "close", None)
+        if close:
+            close()
 
 
 def _execute(sql: str) -> list[dict[str, Any]]:
@@ -401,32 +480,121 @@ def _answer_from_rows(
     return _summarize_with_openrouter(question, plan, rows, history)
 
 
-def answer_question(question: str, history: list[dict[str, str]] | None = None) -> dict[str, Any]:
+def _direct_answer_from_rows(question: str, plan: QueryPlan, rows: list[dict[str, Any]]) -> str | None:
+    if not rows:
+        return "I couldn't find any matching records."
+    if len(rows) == 1 and len(rows[0]) == 1:
+        return _format_value(next(iter(rows[0].values())), plan.title)
+    if len(rows) == 1 and _explicit_text_answer(question):
+        return " · ".join(
+            f"{COLUMN_LABELS.get(key, key.replace('_', ' ').title())}: {_format_value(value, '')}"
+            for key, value in rows[0].items()
+        )
+    return None
+
+
+def _operational_steps(plan: QueryPlan, export_format: str | None) -> list[dict[str, str]]:
+    if plan.mode == "chart":
+        response_label = f"Preparing the {plan.chart_type} chart chosen for this question"
+    elif plan.mode == "table":
+        response_label = "Preparing the requested data table"
+    else:
+        response_label = "Writing the evidence-based answer"
+
+    steps = [
+        {"id": "planning", "label": "Understanding the request and planning the analysis"},
+        {"id": "query", "label": f"Running the data analysis: {plan.title}"},
+        {"id": "response", "label": response_label},
+    ]
+    if export_format:
+        format_names = {"csv": "CSV", "xlsx": "Excel", "pptx": "visually pleasing PowerPoint"}
+        steps.append(
+            {
+                "id": "export",
+                "label": f"Creating the requested {format_names[export_format]} file",
+            }
+        )
+    return steps
+
+
+def answer_question_events(
+    question: str,
+    history: list[dict[str, str]] | None = None,
+    *,
+    stream_content: bool = False,
+) -> Iterator[dict[str, Any]]:
+    if _is_email_action(question):
+        steps = [{"id": "email", "label": "Sending the requested demo email"}]
+        yield {"event": "plan", "steps": steps}
+        yield {"event": "step", "id": "email", "status": "running"}
+        result = send_email()
+        yield {"event": "step", "id": "email", "status": "complete", "result": result}
+        yield {
+            "event": "result",
+            "result": {
+                "content": result,
+                "visualization": None,
+                "attachment": None,
+                "debug": None,
+            },
+        }
+        return
+
+    planning_step = {"id": "planning", "label": "Understanding the request and planning the analysis"}
+    yield {"event": "plan", "steps": [planning_step]}
+    yield {"event": "step", "id": "planning", "status": "running"}
+
     feedback = None
     while True:
         try:
             plan = _plan_with_openrouter(question, history, feedback=feedback) if feedback else _plan_with_openrouter(question, history)
-            explicit_chart = _explicit_chart_type(question)
-            if explicit_chart:
-                plan.mode = "chart"
-                plan.chart_type = explicit_chart
-            if _explicit_text_answer(question):
-                plan.mode = "answer"
-            rows = _execute(plan.sql)
-            if plan.mode == "chart" and rows:
-                if (
-                    "label" not in rows[0]
-                    or not plan.value_keys
-                    or any(key not in rows[0] for key in plan.value_keys)
-                ):
-                    raise QueryError(
-                        "A chart query must return a label column and every declared value_keys column."
-                    )
-            break
         except PlannerError:
             raise
         except QueryError as query_error:
             feedback = str(query_error)
+            continue
+
+        explicit_chart = _explicit_chart_type(question)
+        if explicit_chart:
+            plan.mode = "chart"
+            plan.chart_type = explicit_chart
+        if _explicit_text_answer(question):
+            plan.mode = "answer"
+
+        export_format = _requested_export_format(question)
+        steps = _operational_steps(plan, export_format)
+        yield {"event": "plan", "steps": steps}
+        yield {"event": "step", "id": "planning", "status": "complete"}
+        yield {"event": "step", "id": "query", "status": "running"}
+
+        try:
+            rows = _execute(plan.sql)
+            if plan.mode == "chart" and rows and (
+                "label" not in rows[0]
+                or not plan.value_keys
+                or any(key not in rows[0] for key in plan.value_keys)
+            ):
+                raise QueryError(
+                    "A chart query must return a label column and every declared value_keys column."
+                )
+        except QueryError as query_error:
+            feedback = str(query_error)
+            yield {
+                "event": "step",
+                "id": "query",
+                "status": "complete",
+                "result": "The query needed a safe repair; replanning from the database error",
+            }
+            yield {"event": "step", "id": "planning", "status": "running"}
+            continue
+
+        yield {
+            "event": "step",
+            "id": "query",
+            "status": "complete",
+            "result": f"Analyzed {len(rows):,} result row{'s' if len(rows) != 1 else ''}",
+        }
+        break
 
     visualization = None
     if plan.mode == "chart":
@@ -440,13 +608,45 @@ def answer_question(question: str, history: list[dict[str, str]] | None = None) 
     elif plan.mode == "table" and rows:
         visualization = {"type": "table", "title": plan.title, "data": rows}
 
-    content = _answer_from_rows(question, plan, rows, history)
-    export_format = _requested_export_format(question)
-    attachment = create_export(rows, plan.title, export_format) if export_format else None
+    yield {"event": "step", "id": "response", "status": "running"}
+    direct_answer = _direct_answer_from_rows(question, plan, rows)
+    if direct_answer is not None:
+        content = direct_answer
+    elif stream_content:
+        content_chunks = []
+        for chunk in _summarize_with_openrouter_chunks(question, plan, rows, history):
+            content_chunks.append(chunk)
+            yield {"event": "content", "delta": chunk}
+        content = "".join(content_chunks).strip()
+    else:
+        content = _summarize_with_openrouter(question, plan, rows, history)
+    yield {"event": "step", "id": "response", "status": "complete"}
 
-    return {
-        "content": content,
-        "visualization": visualization,
-        "attachment": attachment,
-        "debug": {"sql": plan.sql, "source": "openrouter"} if os.getenv("APP_DEBUG") == "1" else None,
+    attachment = None
+    if export_format:
+        yield {"event": "step", "id": "export", "status": "running"}
+        attachment = create_export(
+            rows,
+            plan.title,
+            export_format,
+            summary=content,
+            visualization=visualization,
+        )
+        yield {"event": "step", "id": "export", "status": "complete"}
+
+    yield {
+        "event": "result",
+        "result": {
+            "content": content,
+            "visualization": visualization,
+            "attachment": attachment,
+            "debug": {"sql": plan.sql, "source": "openrouter"} if os.getenv("APP_DEBUG") == "1" else None,
+        },
     }
+
+
+def answer_question(question: str, history: list[dict[str, str]] | None = None) -> dict[str, Any]:
+    for event in answer_question_events(question, history):
+        if event.get("event") == "result":
+            return event["result"]
+    raise QueryError("The analysis ended without a result.")

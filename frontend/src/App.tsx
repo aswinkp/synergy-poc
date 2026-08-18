@@ -1,14 +1,15 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
-import { ArrowUp, BarChart3, Download, FileSpreadsheet, LogOut, Menu, MessageSquareText, PanelLeftClose, Plus, Sparkles, Trash2, X } from 'lucide-react'
+import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
+import { ArrowUp, BarChart3, Download, FileSpreadsheet, LogOut, Menu, MessageSquareText, PanelLeftClose, Plus, Presentation, Sparkles, Trash2, X } from 'lucide-react'
 import { api, ApiError } from './api'
+import AgentActivity from './AgentActivity'
 import ChartView from './ChartView'
 import LoginScreen from './LoginScreen'
-import type { AuthUser, Chat, ExportAttachment, Message } from './types'
+import type { AgentStep, AuthUser, Chat, ExportAttachment, Message } from './types'
 
 const prompts = [
+  'Run an executive workforce learning review. Find the three most important risks or opportunities with exact numbers, choose the most useful chart, and generate a visually pleasing PowerPoint briefing.',
   'Show completion status as a donut chart',
   'How many unique employees are in the report?',
-  'Show the top 10 courses as a bar chart',
 ]
 
 function formatRelative(value: string) {
@@ -25,12 +26,14 @@ function formatBytes(bytes: number) {
 }
 
 function ExportCard({ attachment }: { attachment: ExportAttachment }) {
+  const PowerPointIcon = attachment.format === 'pptx' ? Presentation : FileSpreadsheet
+  const unit = attachment.format === 'pptx' ? 'data points' : 'rows'
   return (
     <div className="export-card">
-      <div className="export-icon"><FileSpreadsheet size={20} /></div>
+      <div className="export-icon"><PowerPointIcon size={20} /></div>
       <div className="export-details">
         <strong>{attachment.filename}</strong>
-        <span>{attachment.format.toUpperCase()} · {attachment.row_count.toLocaleString()} rows · {formatBytes(attachment.size_bytes)}</span>
+        <span>{attachment.format.toUpperCase()} · {attachment.row_count.toLocaleString()} {unit} · {formatBytes(attachment.size_bytes)}</span>
       </div>
       <a className="download-export" href={attachment.url} download={attachment.filename}>
         <span>Download</span><Download size={16} />
@@ -51,6 +54,8 @@ export default function App() {
   const [records, setRecords] = useState<number | null>(null)
   const [headcountEmployees, setHeadcountEmployees] = useState<number | null>(null)
   const [error, setError] = useState('')
+  const [streamingContent, setStreamingContent] = useState('')
+  const [agentActivity, setAgentActivity] = useState<{ steps: AgentStep[]; complete: boolean; resultMessageId?: string } | null>(null)
   const endRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
 
@@ -63,6 +68,8 @@ export default function App() {
     setRecords(null)
     setHeadcountEmployees(null)
     setInput('')
+    setAgentActivity(null)
+    setStreamingContent('')
   }
 
   const handleRequestError = (reason: unknown, fallback: string) => {
@@ -103,13 +110,15 @@ export default function App() {
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [messages, loading])
+  }, [messages, loading, streamingContent])
 
   const newChat = () => {
     setActiveId(null)
     setMessages([])
     setInput('')
     setSidebarOpen(false)
+    setAgentActivity(null)
+    setStreamingContent('')
     setTimeout(() => inputRef.current?.focus(), 0)
   }
 
@@ -120,6 +129,8 @@ export default function App() {
       setActiveId(id)
       setMessages(chat.messages || [])
       setSidebarOpen(false)
+      setAgentActivity(null)
+      setStreamingContent('')
     } catch (reason) {
       handleRequestError(reason, 'Could not open that chat')
     }
@@ -142,6 +153,8 @@ export default function App() {
     if (!question || loading) return
     setError('')
     setInput('')
+    setStreamingContent('')
+    setAgentActivity({ steps: [], complete: false })
     const optimistic: Message = {
       id: `pending-${Date.now()}`,
       role: 'user',
@@ -151,11 +164,37 @@ export default function App() {
     setMessages((current) => [...current, optimistic])
     setLoading(true)
     try {
-      const result = await api.ask(activeId, question)
+      const result = await api.agentReview(activeId, question, (event) => {
+        if (event.event === 'plan') {
+          setAgentActivity({
+            steps: event.steps.map((step) => ({ ...step, status: 'pending' })),
+            complete: false,
+          })
+        }
+        if (event.event === 'step') {
+          setAgentActivity((current) => current ? {
+            ...current,
+            steps: current.steps.map((step) => step.id === event.id
+              ? { ...step, status: event.status, result: event.result || step.result }
+              : step),
+          } : current)
+        }
+        if (event.event === 'content') {
+          setStreamingContent((current) => current + event.delta)
+        }
+      })
       setActiveId(result.chat_id)
+      setStreamingContent('')
       setMessages((current) => [...current, result.message])
+      setAgentActivity((current) => current ? {
+        ...current,
+        complete: true,
+        resultMessageId: result.message.id,
+      } : current)
       await refreshChats()
     } catch (reason) {
+      setAgentActivity(null)
+      setStreamingContent('')
       handleRequestError(reason, 'The question could not be answered')
     } finally {
       setLoading(false)
@@ -234,16 +273,20 @@ export default function App() {
           ) : (
             <div className="message-list">
               {messages.map((message) => (
-                <article key={message.id} className={`message ${message.role}`}>
-                  {message.role === 'assistant' && <div className="assistant-avatar"><Sparkles size={15} /></div>}
-                  <div className="message-body">
-                    <p>{message.content}</p>
-                    {message.visualization && <ChartView visualization={message.visualization} />}
-                    {message.attachment && <ExportCard attachment={message.attachment} />}
-                  </div>
-                </article>
+                <Fragment key={message.id}>
+                  {agentActivity?.resultMessageId === message.id && <AgentActivity steps={agentActivity.steps} complete />}
+                  <article className={`message ${message.role}`}>
+                    {message.role === 'assistant' && <div className="assistant-avatar"><Sparkles size={15} /></div>}
+                    <div className="message-body">
+                      <p>{message.content}</p>
+                      {message.visualization && <ChartView visualization={message.visualization} />}
+                      {message.attachment && <ExportCard attachment={message.attachment} />}
+                    </div>
+                  </article>
+                </Fragment>
               ))}
-              {loading && <div className="message assistant"><div className="assistant-avatar"><Sparkles size={15} /></div><div className="thinking"><i/><i/><i/></div></div>}
+              {agentActivity && !agentActivity.resultMessageId && <AgentActivity steps={agentActivity.steps} complete={false} />}
+              {streamingContent && <div className="message assistant streaming"><div className="assistant-avatar"><Sparkles size={15} /></div><div className="message-body"><p>{streamingContent}</p></div></div>}
               <div ref={endRef} />
             </div>
           )}

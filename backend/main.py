@@ -7,11 +7,12 @@ from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from .auth import (
+    AuthenticatedUser,
     CurrentUser,
     authenticate_user,
     clear_session_cookie,
@@ -19,6 +20,7 @@ from .auth import (
     set_session_cookie,
     validate_auth_configuration,
 )
+from .agent_review import executive_review_events
 from .config import ROOT, find_headcount_workbook, find_workbook
 from .database import connect, initialize_database, load_attachment, load_visualization, utc_now
 from .exports import attachment_path
@@ -75,6 +77,81 @@ def _message_row(row) -> dict:
 
 def _chat_title(message: str) -> str:
     return " ".join(message.split())
+
+
+def _start_chat_message(
+    request: ChatRequest,
+    user: AuthenticatedUser,
+) -> tuple[str, list[dict[str, str]]]:
+    chat_id = request.chat_id or str(uuid.uuid4())
+    now = utc_now()
+    message = request.message.strip()
+    with connect() as db:
+        chat = db.execute(
+            "SELECT * FROM chats WHERE id = ? AND user_id = ?",
+            (chat_id, user.id),
+        ).fetchone()
+        if not chat:
+            if request.chat_id:
+                raise HTTPException(status_code=404, detail="Chat not found")
+            db.execute(
+                "INSERT INTO chats(id, user_id, title, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                (chat_id, user.id, _chat_title(message), now, now),
+            )
+        elif chat["title"] == "New analysis":
+            db.execute(
+                "UPDATE chats SET title = ? WHERE id = ? AND user_id = ?",
+                (_chat_title(message), chat_id, user.id),
+            )
+        history_rows = db.execute(
+            "SELECT role, content FROM messages WHERE chat_id = ? ORDER BY created_at",
+            (chat_id,),
+        ).fetchall()
+        history = [
+            {"role": row["role"], "content": row["content"]}
+            for row in history_rows
+        ]
+        db.execute(
+            "INSERT INTO messages(id, chat_id, role, content, created_at) VALUES (?, ?, 'user', ?, ?)",
+            (str(uuid.uuid4()), chat_id, message, now),
+        )
+    return chat_id, history
+
+
+def _persist_assistant_result(
+    chat_id: str,
+    user: AuthenticatedUser,
+    result: dict,
+) -> dict:
+    assistant_id = str(uuid.uuid4())
+    answered_at = utc_now()
+    with connect() as db:
+        db.execute(
+            "INSERT INTO messages(id, chat_id, role, content, visualization, attachment, created_at) VALUES (?, ?, 'assistant', ?, ?, ?, ?)",
+            (
+                assistant_id,
+                chat_id,
+                result["content"],
+                json.dumps(result["visualization"]) if result.get("visualization") else None,
+                json.dumps(result.get("attachment")) if result.get("attachment") else None,
+                answered_at,
+            ),
+        )
+        db.execute(
+            "UPDATE chats SET updated_at = ? WHERE id = ? AND user_id = ?",
+            (answered_at, chat_id, user.id),
+        )
+    return {
+        "chat_id": chat_id,
+        "message": {
+            "id": assistant_id,
+            "role": "assistant",
+            "content": result["content"],
+            "visualization": result.get("visualization"),
+            "attachment": result.get("attachment"),
+            "created_at": answered_at,
+        },
+    }
 
 
 @app.get("/healthz", include_in_schema=False)
@@ -189,84 +266,55 @@ def download_export(export_id: str, user: CurrentUser):
     path = attachment_path(attachment)
     if not path or not path.is_file():
         raise HTTPException(status_code=404, detail="Export file not found")
-    media_type = (
-        "text/csv; charset=utf-8"
-        if attachment["format"] == "csv"
-        else "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    )
+    media_types = {
+        "csv": "text/csv; charset=utf-8",
+        "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    }
+    media_type = media_types.get(attachment["format"], "application/octet-stream")
     return FileResponse(path, media_type=media_type, filename=attachment["filename"])
 
 
 @app.post("/api/chat")
 def chat(request: ChatRequest, user: CurrentUser):
-    chat_id = request.chat_id or str(uuid.uuid4())
-    now = utc_now()
-    with connect() as db:
-        chat = db.execute(
-            "SELECT * FROM chats WHERE id = ? AND user_id = ?",
-            (chat_id, user.id),
-        ).fetchone()
-        if not chat:
-            if request.chat_id:
-                raise HTTPException(status_code=404, detail="Chat not found")
-            title = _chat_title(request.message)
-            db.execute(
-                "INSERT INTO chats(id, user_id, title, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
-                (chat_id, user.id, title, now, now),
-            )
-        elif chat["title"] == "New analysis":
-            db.execute(
-                "UPDATE chats SET title = ? WHERE id = ? AND user_id = ?",
-                (_chat_title(request.message), chat_id, user.id),
-            )
-        history_rows = db.execute(
-            "SELECT role, content FROM messages WHERE chat_id = ? ORDER BY created_at",
-            (chat_id,),
-        ).fetchall()
-        history = [
-            {"role": row["role"], "content": row["content"]}
-            for row in history_rows
-        ]
-        user_message_id = str(uuid.uuid4())
-        db.execute(
-            "INSERT INTO messages(id, chat_id, role, content, created_at) VALUES (?, ?, 'user', ?, ?)",
-            (user_message_id, chat_id, request.message.strip(), now),
-        )
+    chat_id, history = _start_chat_message(request, user)
 
     try:
         result = answer_question(request.message.strip(), history=history)
     except QueryError as exc:
         result = {"content": str(exc), "visualization": None, "attachment": None, "debug": None}
+    return _persist_assistant_result(chat_id, user, result)
 
-    assistant_id = str(uuid.uuid4())
-    answered_at = utc_now()
-    with connect() as db:
-        db.execute(
-            "INSERT INTO messages(id, chat_id, role, content, visualization, attachment, created_at) VALUES (?, ?, 'assistant', ?, ?, ?, ?)",
-            (
-                assistant_id,
-                chat_id,
-                result["content"],
-                json.dumps(result["visualization"]) if result["visualization"] else None,
-                json.dumps(result.get("attachment")) if result.get("attachment") else None,
-                answered_at,
-            ),
-        )
-        db.execute(
-            "UPDATE chats SET updated_at = ? WHERE id = ? AND user_id = ?",
-            (answered_at, chat_id, user.id),
-        )
-    return {
-        "chat_id": chat_id,
-        "message": {
-            "id": assistant_id,
-            "role": "assistant",
-            "content": result["content"],
-            "visualization": result["visualization"],
-            "attachment": result.get("attachment"),
-            "created_at": answered_at,
-        },
-    }
+
+@app.post("/api/agent-review")
+def agent_review(request: ChatRequest, user: CurrentUser):
+    chat_id, history = _start_chat_message(request, user)
+
+    def stream():
+        try:
+            for event in executive_review_events(request.message.strip(), history):
+                if event.get("event") == "result":
+                    event = {
+                        "event": "result",
+                        "result": _persist_assistant_result(chat_id, user, event["result"]),
+                    }
+                yield json.dumps(event, ensure_ascii=False, default=str) + "\n"
+        except QueryError as exc:
+            yield json.dumps({"event": "error", "message": str(exc)}, ensure_ascii=False) + "\n"
+        except Exception as exc:
+            yield json.dumps(
+                {
+                    "event": "error",
+                    "message": f"Analysis failed: {type(exc).__name__}: {exc}",
+                },
+                ensure_ascii=False,
+            ) + "\n"
+
+    return StreamingResponse(
+        stream(),
+        media_type="application/x-ndjson",
+        headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"},
+    )
 
 
 FRONTEND_DIST = ROOT / "frontend" / "dist"

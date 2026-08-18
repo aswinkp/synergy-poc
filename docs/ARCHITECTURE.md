@@ -33,7 +33,7 @@ User question
 React chat interface
     |
     v
-POST /api/chat
+POST /api/agent-review (newline-delimited event stream)
     |
     +--> Verify signed session and active database user
     |
@@ -45,15 +45,35 @@ POST /api/chat
     +--> Validate and execute read-only SQL
     |       invalid query -> model repair -> validate again
     |
-    +--> Direct scalar response or OpenRouter synthesis call
+    +--> Direct scalar response or streaming OpenRouter synthesis call
     |
-    +--> Explicit CSV/Excel request? Generate from the same result rows
+    +--> Explicit CSV/Excel/PowerPoint request? Generate from the same result rows
     |
     +--> Persist assistant response, visualization, and attachment metadata in SQLite
     |
     v
-React renders text, table, or Recharts visualization, then an optional download card
+React progressively renders answer text, then the final table or Recharts visualization and optional download card
 ```
+
+## Streaming agent execution
+
+Every frontend question calls `POST /api/agent-review`. This is a bounded execution shell around the same prompt-driven query engine available through the non-streaming compatibility endpoint, not a separate fixed analysis recipe. It streams newline-delimited JSON events over the authenticated HTTP response:
+
+```text
+Create or reuse the user-owned chat
+    |
+    +--> Show "understanding the request" while GPT-5.6 Luna plans from the question and schema
+    +--> Stream the model-selected analysis title and execute its guarded read-only SQL
+    +--> Stream the model-selected written answer as it is generated
+    +--> Produce the model-selected table or chart from those result rows
+    +--> Create CSV, Excel, or PowerPoint only when that format is requested
+    +--> For an explicit email action, use the deterministic demo response: "email is sent"
+    |
+    v
+Persist one ordinary assistant message with text, chart, and attachment
+```
+
+No workforce segment, tenure bucket, manager ranking, SQL statement, chart choice, or keyword-based execution route is embedded in this path. Those come from the current question and the model's validated query plan. Only the operational tool contract and safety boundary are fixed. Each `running`, `complete`, or answer-content event wraps actual work; the frontend does not simulate progress or add artificial delays. Step state and partial text are transient, while the final assistant response uses the existing chat persistence and ownership boundary. If the stream fails, it emits a structured error event and does not persist a partial assistant answer.
 
 ## Data lifecycle
 
@@ -123,7 +143,7 @@ The backend returns an assistant message with plain text, an optional visualizat
 }
 ```
 
-The frontend owns chart rendering. Model synthesis is instructed not to return Markdown charts, Mermaid, JSON, or text tables. Export intent is detected deterministically from explicit `CSV`, `Excel`, `XLS`, or `XLSX` wording; the model cannot silently opt a normal response into file generation. CSV uses UTF-8 with a byte-order mark for Excel compatibility, XLSX includes a styled header, frozen row, filter, and practical widths, and formula-like text is neutralized in both formats.
+The frontend owns chart rendering. Model synthesis is instructed not to return Markdown charts, Mermaid, JSON, or text tables. Export intent is detected deterministically from explicit `CSV`, `Excel`, `XLS`, `XLSX`, `PowerPoint`, `PPT`, or `PPTX` wording; the model cannot silently opt a normal response into file generation. CSV uses UTF-8 with a byte-order mark for Excel compatibility, XLSX includes a styled header, frozen row, filter, and practical widths, and formula-like text is neutralized in both formats. PowerPoint requests add a slide-ready executive-writing instruction to the model. The deterministic renderer then applies a branded 16:9 visual system, separates long narratives across readable briefing slides, builds a native chart with a management-takeaway rail when supported, and limits the evidence slide to a legible data sample. Explicit email-action language follows a separate deterministic demo path and returns exactly `email is sent` without contacting an external service.
 
 ## Persistence
 

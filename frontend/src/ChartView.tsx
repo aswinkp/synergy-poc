@@ -47,12 +47,21 @@ export default function ChartView({ visualization }: { visualization: Visualizat
   const labelKey = visualization.labelKey || 'label'
   const valueKeys = visualization.valueKeys?.length ? visualization.valueKeys : ['value']
   const height = Math.max(300, visualization.data.length * 26)
+  const plottedValues = visualization.data.flatMap((row) => valueKeys
+    .map((key) => row[key])
+    .filter((value): value is number => typeof value === 'number' && Number.isFinite(value)))
+  const allValuesAreZero = plottedValues.length > 0 && plottedValues.every((value) => value === 0)
   const tooltip = <Tooltip contentStyle={{ border: 0, borderRadius: 12, boxShadow: '0 10px 35px rgba(16,32,48,.14)' }} />
 
   return (
     <figure className="chart-card" aria-label={visualization.title}>
       <figcaption>{visualization.title}</figcaption>
-      <div className="chart-canvas" style={{ height }}>
+      {allValuesAreZero ? (
+        <div className="chart-zero-state" style={{ minHeight: height }}>
+          <strong>Every plotted value is 0.</strong>
+          <span>The chart is not missing data. All {visualization.data.length.toLocaleString()} selected groups are at zero for this measure.</span>
+        </div>
+      ) : <div className="chart-canvas" style={{ height }}>
         <ResponsiveContainer width="100%" height="100%">
           {visualization.type === 'pie' ? (
             <PieChart>
@@ -92,7 +101,7 @@ export default function ChartView({ visualization }: { visualization: Visualizat
             </BarChart>
           )}
         </ResponsiveContainer>
-      </div>
+      </div>}
     </figure>
   )
 }

@@ -11,7 +11,9 @@ The application imports environment-provided workbooks into a relational SQLite 
 - Follow-up questions using the full conversation history
 - Direct answers, analytical summaries, tables, and charts
 - Bar, pie, line, and area charts rendered in React with Recharts
-- On-demand CSV and Excel (`.xlsx`) exports generated only when explicitly requested
+- Prompt-driven analysis with live, truthful planning, query, response, answer-text, and export progress for every question
+- A demo email action that responds exactly with `email is sent`
+- On-demand CSV, Excel (`.xlsx`), and visually designed PowerPoint (`.pptx`) briefings generated only when explicitly requested
 - Persistent download cards attached to the relevant assistant response
 - Multiple persistent chat threads in the sidebar
 - Database-provisioned login with no public signup
@@ -22,7 +24,7 @@ The application imports environment-provided workbooks into a relational SQLite 
 
 ## Technology
 
-- Backend: Python, FastAPI, SQLite, OpenPyXL, OpenAI-compatible SDK
+- Backend: Python, FastAPI, SQLite, OpenPyXL, python-pptx, OpenAI-compatible SDK
 - Frontend: React, TypeScript, Vite, Recharts
 - AI gateway: OpenRouter
 - Default model: `openai/gpt-5.6-luna` with `high` reasoning
@@ -193,7 +195,11 @@ Tests create isolated synthetic learning and headcount workbooks plus SQLite in 
 - Invalid SQL is returned to the model for repair until a valid read-only query is produced.
 - Scalar results are returned directly; richer results are synthesized by the model.
 - The frontend renders visualization payloads independently from the written response.
-- CSV or Excel files are generated from the same validated SQL result only when the prompt explicitly asks for that format. Asking for a chart, table, or ordinary answer does not create a file.
+- The React client sends every question through the same streaming, model-planned, guarded query engine. Step labels, SQL analysis, response shape, and chart follow the user's actual question; there is no keyword-based route or injected workforce, tenure, generation, or manager analysis.
+- The progress card first shows the slower model-planning operation, then names the model-selected analysis and answer format. Fast SQLite work may complete between browser paints, but every displayed state reflects completed work rather than a simulated delay.
+- Rich written answers stream into the chat as the model generates them, then the completed answer, chart, and optional attachment are persisted together.
+- Explicit email-action prompts bypass the model and return exactly `email is sent`; no email provider is contacted.
+- CSV, Excel, or PowerPoint files are generated from the same validated result only when the prompt explicitly asks for that format. PowerPoint requests also steer the model toward a concise, slide-ready executive narrative, while the deterministic deck renderer applies the presentation design system, native charts, management takeaways, readable evidence tables, and additional briefing slides when the answer is too long for one slide. Asking for a chart, table, or ordinary answer does not create a file.
 - Export metadata is stored with the assistant message, so its download card remains available when the chat is reopened. Deleting the chat also removes its generated files.
 - Login uses `pwdlib` with Argon2 password hashing and `PyJWT` signed sessions in an HttpOnly, SameSite cookie. The frontend never reads or stores the token.
 - Every chat, message history lookup, deletion, and export download is constrained to the authenticated owner.
@@ -208,13 +214,14 @@ Tests create isolated synthetic learning and headcount workbooks plus SQLite in 
 - `POST /api/chats` — create an empty chat
 - `GET /api/chats/{chat_id}` — load a chat and its messages
 - `DELETE /api/chats/{chat_id}` — delete a chat
-- `POST /api/chat` — ask a question in a new or existing chat
+- `POST /api/chat` — non-streaming compatibility endpoint for a question in a new or existing chat
+- `POST /api/agent-review` — primary frontend endpoint; stream prompt-driven progress and answer text as newline-delimited JSON
 - `GET /api/exports/{export_id}` — download an export referenced by a persisted assistant message
 
 ## Repository layout
 
 ```text
-backend/                 FastAPI API, authentication, user provisioning, workbook import, SQLite, AI query engine
+backend/                 FastAPI API, authentication, workbook import, SQLite, AI query engine, proactive review, exports
 frontend/src/            React chat interface and visualization rendering
 tests/                   Isolated backend and API tests with synthetic data
 docs/ARCHITECTURE.md     System design and trust boundaries

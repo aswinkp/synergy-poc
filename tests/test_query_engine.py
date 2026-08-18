@@ -23,6 +23,7 @@ from backend.query_engine import (
     _read_only_authorizer,
     _requested_export_format,
     _summarize_with_openrouter,
+    _summarize_with_openrouter_chunks,
     _validate_sql,
     answer_question,
 )
@@ -137,6 +138,38 @@ class QueryEngineTests(unittest.TestCase):
         system_prompt = create.call_args.kwargs["messages"][0]["content"]
         self.assertIn("plain text only", system_prompt)
         self.assertIn("never reproduce delimited rows", system_prompt)
+        self.assertIn("Generate visually pleasing PowerPoints", system_prompt)
+
+    def test_streaming_synthesis_keeps_high_reasoning_and_has_no_output_limit(self):
+        create = MagicMock()
+        create.return_value = [
+            SimpleNamespace(
+                choices=[SimpleNamespace(delta=SimpleNamespace(content="First "))],
+            ),
+            SimpleNamespace(
+                choices=[SimpleNamespace(delta=SimpleNamespace(content="finding."))],
+            ),
+        ]
+        client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
+        plan = QueryPlan(
+            "SELECT status AS label, COUNT(*) AS value FROM learning_records GROUP BY status",
+            "table",
+            "Status patterns",
+        )
+
+        with patch("backend.query_engine._openrouter_client", return_value=client):
+            chunks = list(
+                _summarize_with_openrouter_chunks(
+                    "Find patterns",
+                    plan,
+                    [{"label": "Completed", "value": 2}],
+                )
+            )
+
+        self.assertEqual(chunks, ["First ", "finding."])
+        self.assertTrue(create.call_args.kwargs["stream"])
+        self.assertEqual(create.call_args.kwargs["extra_body"], {"reasoning": {"effort": "high"}})
+        self.assertNotIn("max_tokens", create.call_args.kwargs)
 
     def test_context_and_query_results_are_not_truncated(self):
         history = [

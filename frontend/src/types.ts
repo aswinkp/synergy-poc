@@ -10,13 +10,34 @@ export interface Visualization {
 
 export interface ExportAttachment {
   id: string
-  format: 'csv' | 'xlsx'
+  format: 'csv' | 'xlsx' | 'pptx'
   filename: string
   url: string
   row_count: number
   size_bytes: number
   title: string
 }
+
+export type AgentStepStatus = 'pending' | 'running' | 'complete'
+
+export interface AgentStep {
+  id: string
+  label: string
+  status: AgentStepStatus
+  result?: string
+}
+
+export interface ChatResponse {
+  chat_id: string
+  message: Message
+}
+
+export type AgentStreamEvent =
+  | { event: 'plan'; steps: Array<{ id: string; label: string }> }
+  | { event: 'step'; id: string; status: 'running' | 'complete'; result?: string }
+  | { event: 'content'; delta: string }
+  | { event: 'result'; result: ChatResponse }
+  | { event: 'error'; message: string }
 
 export interface Message {
   id: string

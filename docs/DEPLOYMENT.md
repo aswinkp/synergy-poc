@@ -38,7 +38,7 @@ The checkout lives at `/opt/synergy-poc`:
 │   └── headcount.xlsx    # environment-specific, read-only in the container
 └── data/
     ├── learning_chat.db  # users, chats, imported analytics, and export metadata
-    ├── exports/          # generated CSV/XLSX downloads
+    ├── exports/          # generated CSV/XLSX/PPTX downloads
     └── backups/          # rolling local SQLite backups
 ```
 
@@ -119,7 +119,7 @@ Expected response:
 {"status":"ok"}
 ```
 
-Then sign in through the browser, open an existing chat, ask a cross-workbook question, render a chart, and request one CSV or Excel export.
+Then sign in through the browser, open an existing chat, ask a cross-workbook question, render a chart, and request one CSV or Excel export plus one visually pleasing PowerPoint briefing. Open the downloaded `.pptx` once to verify that the server-generated native chart and fonts render correctly in the presentation software used for the demo.
 
 ## Automated backups
 
