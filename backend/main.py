@@ -318,6 +318,18 @@ def agent_review(request: ChatRequest, user: CurrentUser):
 
 
 FRONTEND_DIST = ROOT / "frontend" / "dist"
+
+
+def _resolve_frontend_file(path: str) -> Path | None:
+    if not path:
+        return None
+    frontend_root = FRONTEND_DIST.resolve()
+    requested = (frontend_root / path).resolve()
+    if not requested.is_relative_to(frontend_root):
+        raise HTTPException(status_code=404, detail="Not found")
+    return requested if requested.is_file() else None
+
+
 if FRONTEND_DIST.exists():
     assets = FRONTEND_DIST / "assets"
     if assets.exists():
@@ -325,7 +337,7 @@ if FRONTEND_DIST.exists():
 
     @app.get("/{path:path}")
     def frontend(path: str):
-        requested = FRONTEND_DIST / path
-        if path and requested.is_file():
+        requested = _resolve_frontend_file(path)
+        if requested:
             return FileResponse(requested)
         return FileResponse(FRONTEND_DIST / "index.html")

@@ -5,10 +5,11 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 from backend.database import initialize_database
-from backend.main import app
+from backend.main import _resolve_frontend_file, app
 from backend.query_engine import QueryPlan
 from backend.users import create_user
 from tests.fixtures import TEST_RECORDS, create_test_headcount_workbook, create_test_workbook
@@ -80,6 +81,12 @@ class ApiTests(unittest.TestCase):
             self.assertEqual(client.get("/api/auth/me").status_code, 401)
             client.cookies.set("synergy_session", "invalid-token", path="/api")
             self.assertEqual(client.get("/api/auth/me").status_code, 401)
+
+    def test_frontend_file_resolution_cannot_escape_distribution_directory(self):
+        with self.assertRaises(HTTPException) as context:
+            _resolve_frontend_file("../../requirements.txt")
+        self.assertEqual(context.exception.status_code, 404)
+        self.assertIsNone(_resolve_frontend_file("missing-client-route"))
 
     def test_chat_lifecycle(self):
         plan = QueryPlan(
